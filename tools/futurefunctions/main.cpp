@@ -1,5 +1,6 @@
 
 #include "llvm/ADT/SparseBitVector.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/IR/CallSite.h"
 #include "llvm/IR/DebugInfo.h"
 #include "llvm/IR/LLVMContext.h"
@@ -12,11 +13,21 @@
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include "llvm/Analysis/TypeBasedAliasAnalysis.h"
+#include "llvm/Analysis/AliasAnalysis.h"
+#include "llvm/Analysis/BasicAliasAnalysis.h"
+
+#include "llvm/Analysis/LoopInfo.h"
+#include "llvm/Analysis/MemorySSA.h"
+#include "llvm/Analysis/Passes.h"
+
+#include "llvm/IR/LegacyPassManager.h"
+#include "llvm/IR/Dominators.h"
+
 #include <bitset>
 #include <memory>
 #include <string>
 
-#include "DataflowAnalysis.h"
 
 
 using namespace llvm;
@@ -34,106 +45,119 @@ static cl::opt<string> inPath{cl::Positional,
                               cl::cat{futureFunctionsCategory}};
 
 
-static const llvm::Function *
-getCalledFunction(const llvm::CallSite cs) {
-  if (!cs.getInstruction()) {
-    return nullptr;
-  }
+class FutureFunctionsPass : public llvm::ModulePass {
+public:
+  FutureFunctionsPass()
+    : llvm::ModulePass{ID}
+      { }
 
-  const llvm::Value *called = cs.getCalledValue()->stripPointerCasts();
-  return llvm::dyn_cast<llvm::Function>(called);
+  bool runOnModule(llvm::Module& m) override;
+  void getAnalysisUsage(llvm::AnalysisUsage &info) const override;
+  StringRef getPassName() const override;
+
+//private:
+  static char ID;
+};
+char FutureFunctionsPass::ID = 0;
+
+StringRef
+FutureFunctionsPass::getPassName() const {
+  return "FutureFunctionsPass";
 }
 
-
-using FunctionsValue  = llvm::SparseBitVector<>;
-using FunctionsState  = analysis::AbstractState<FunctionsValue>;
-using FunctionsResult = analysis::DataflowResult<FunctionsValue>;
-
-
-static std::vector<const llvm::Function*> functions;
-static llvm::DenseMap<const llvm::Function*,size_t> functionIDs;
-
-class FunctionsMeet : public analysis::Meet<FunctionsValue, FunctionsMeet> {
-public:
-  FunctionsValue
-  meetPair(FunctionsValue& s1, FunctionsValue& s2) const {
-    return s1 | s2;
+bool
+FutureFunctionsPass::runOnModule(llvm::Module& m) {
+  auto* mainFunction = m.getFunction("main");
+  if (!mainFunction) {
+    llvm::report_fatal_error("Unable to find main function.");
   }
-};
+  llvm::DenseMap<llvm::Function*, llvm::AliasAnalysis*> fAAs;
 
-
-class FunctionsTransfer {
-public:
-  void
-  operator()(llvm::Value& v, FunctionsState& state) {
-    const CallSite cs{&v};
-    const auto* fun = getCalledFunction(cs);
-    // Pretend that indirect calls & non calls don't exist for this analysis
-    if (!fun) {
-      return;
-    }
-
-    auto [found, inserted] = functionIDs.insert({fun, functions.size()});
-    if (inserted) {
-      functions.push_back(fun);
-    }
-    state[nullptr].set(found->second);
-  }
-};
-
-
-template <typename OutIterator>
-static void
-collectFollowers(FunctionsResult& followerStates, OutIterator followers) {
-  for (auto& [value,state] : followerStates) {
-    auto* inst = llvm::dyn_cast<llvm::Instruction>(value);
-    if (!inst) {
+  for (auto& f : m) {
+    if ( f.isDeclaration()) {
       continue;
     }
+    //llvm::errs() << "\n Get Dom Tree for " << f.getName() << "\n";
+    //auto* DT = &getAnalysis<DominatorTreeWrapperPass>(f).getDomTree();
+    llvm::errs() << "\n Get AA Tree for " << f.getName() << "\n";
+    auto* AA = &getAnalysis<AAResultsWrapperPass>(f).getAAResults();
+    //llvm::errs() << "\n Get memSSA Tree for " << f.getName() << "\n";
+    //auto memSSA = std::make_unique<MemorySSA>(f, AA, DT);
+  
+    fAAs.insert({&f, AA});
+    //memSSA->print(llvm::outs());
+    //Edges backedges;
+    //llvm::FindFunctionBackedges(f, backedges);
+    //functionBackEdges.try_emplace(&f, backedges);
+  }
 
-    llvm::CallSite cs{inst};
-    auto* fun = getCalledFunction(cs);
-    if (!fun) {
-      continue;
+  for (auto& f : m) {
+    //if (f.getName() == "bar" || f.getName() == "crash") {
+    //  continue;
+    //}
+    for (auto& bb : f) {
+      std::vector<llvm::LoadInst*> loadInsts;
+      std::vector<llvm::StoreInst*> storeInsts;
+      for (auto& i : bb) {
+        auto* loadi = llvm::dyn_cast<llvm::LoadInst>(&i);
+        if (loadi != nullptr) {
+          loadInsts.push_back(loadi);
+        }
+        auto* storei = llvm::dyn_cast<llvm::StoreInst>(&i);
+        if (storei != nullptr) {
+          storeInsts.push_back(storei);
+        }
+      }
+
+      llvm::outs() << "\n" << f.getName();
+      for (auto* loadi : loadInsts) {
+        for (auto* storei : storeInsts) {
+          llvm::outs() << "\n " << *loadi;
+          llvm::outs() << "\n " << *storei;
+          auto* AA = fAAs[&f];
+          auto AAResult = AA->alias(loadi, loadi);
+          if (AAResult == AliasResult::MustAlias) {
+            llvm::outs() << "\n Must Alias" ;
+          }
+        }
+      }
     }
 
-    *followers++ = std::make_pair(inst, state[nullptr]);
   }
+
+
+
+  return false;
+}
+
+void
+FutureFunctionsPass::getAnalysisUsage(llvm::AnalysisUsage &info) const {
+  //info.setPreservesAll();
+  //info.addRequired<DominatorTreeWrapperPass>();
+  info.addRequired<AAResultsWrapperPass>();
+  info.addPreserved<AAResultsWrapperPass>();
+  //info.addRequired<AliasAnalysis>();
+  //info.addRequired<PostDominatorTreeWrapperPass>();
 }
 
 
 static void
-printLineNumber(llvm::raw_ostream& out, llvm::Instruction& inst) {
-  if (const llvm::DILocation* debugLoc = inst.getDebugLoc()) {
-    out << "At " << debugLoc->getFilename()
-        << " line " << debugLoc->getLine()
-        << ":\n";
-  } else {
-    out << "At an unknown location:\n";
-  }  
-}
-
-
-static void
-printFollowers(llvm::ArrayRef<std::pair<llvm::Instruction*, FunctionsValue>> followers) {
-  for (auto& [callsite, after] : followers) {
-    llvm::outs().changeColor(raw_ostream::Colors::RED);
-    printLineNumber(llvm::outs(), *callsite);
-
-    auto* called = getCalledFunction(llvm::CallSite{callsite});
-    llvm::outs().changeColor(raw_ostream::Colors::YELLOW);
-    llvm::outs() << "After call to \"" << called->getName() << "\"";
-    for (auto id : after) {
-      llvm::outs() << " " << functions[id]->getName();
-    }
-    llvm::outs() << "\n";
-  }
-
-  if (followers.empty()) {
-    llvm::outs().changeColor(raw_ostream::Colors::GREEN);
-    llvm::outs() << "No followers collected\n";
-  }
-  llvm::outs().resetColor();
+instrumentFunctions(llvm::Module& m) {
+  llvm::DebugFlag = true;
+  legacy::PassManager pm;
+  pm.add(createTypeBasedAAWrapperPass());
+//  pm.add(createGlobalsAAWrapperPass());
+//  pm.add(createSCEVAAWrapperPass());
+//  pm.add(createScopedNoAliasAAWrapperPass());
+//  pm.add(createCFLSteensAAWrapperPass());
+//  pm.add(new llvm::LoopInfoWrapperPass());
+//  pm.add(createPostDomTree());
+//  pm.add(new MemorySSAWrapperPass());
+//  pm.add(new DominatorTreeWrapperPass());
+  //pm.add(createBasicAAWrapperPass());
+  pm.add(new AAResultsWrapperPass());
+  pm.add(new FutureFunctionsPass());
+  pm.run(m);
 }
 
 
@@ -163,22 +187,8 @@ main(int argc, char** argv) {
   if (!mainFunction) {
     llvm::report_fatal_error("Unable to find main function.");
   }
-
-  using Value    = FunctionsValue;
-  using Transfer = FunctionsTransfer;
-  using Meet     = FunctionsMeet;
-  using Analysis = analysis::DataflowAnalysis<Value, Transfer, Meet, analysis::Backward>;
-  Analysis analysis{*module, mainFunction};
-  auto results = analysis.computeDataflow();
-
-  std::vector<std::pair<llvm::Instruction*, FunctionsValue>> followers;
-  for (auto& [context, contextResults] : results) {
-    for (auto& [function, functionResults] : contextResults) {
-      collectFollowers(functionResults, std::back_inserter(followers));
-    }
-  }
-
-  printFollowers(followers);
+  
+  instrumentFunctions(*module);
 
   return 0;
 }

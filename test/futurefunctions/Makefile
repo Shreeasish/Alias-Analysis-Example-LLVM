@@ -11,7 +11,7 @@
 #
 
 #LLVM_BIN     := /usr/shared/CMPT/wsumner/llvm/bin/
-CHECKER      := ../../../dfbuild/bin/futurefunctions
+CHECKER      := ../../../build/bin/futurefunctions
 CLANG        := $(LLVM_BIN)clang
 OPT          := $(LLVM_BIN)opt
 RM           := rm
