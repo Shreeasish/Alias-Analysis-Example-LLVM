@@ -13,6 +13,17 @@
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include "llvm/Analysis/AliasAnalysis.h"
+#include "llvm/Analysis/BasicAliasAnalysis.h"
+#include "llvm/Analysis/CFG.h"
+#include "llvm/Analysis/CFLSteensAliasAnalysis.h"
+#include "llvm/Analysis/CallGraph.h"
+#include "llvm/Analysis/GlobalsModRef.h"
+#include "llvm/Analysis/LoopInfo.h"
+#include "llvm/Analysis/Passes.h"
+#include "llvm/Analysis/ScalarEvolutionAliasAnalysis.h"
+#include "llvm/Analysis/ScopedNoAliasAA.h"
+
 #include "llvm/Analysis/TypeBasedAliasAnalysis.h"
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/BasicAliasAnalysis.h"
@@ -71,18 +82,18 @@ FutureFunctionsPass::runOnModule(llvm::Module& m) {
   if (!mainFunction) {
     llvm::report_fatal_error("Unable to find main function.");
   }
-  llvm::DenseMap<llvm::Function*, llvm::AliasAnalysis*> fAAs;
+  llvm::DenseMap<llvm::Function*, llvm::AAResultsWrapperPass*> fAAs;
 
   for (auto& f : m) {
     if ( f.isDeclaration()) {
       continue;
     }
-    //llvm::errs() << "\n Get Dom Tree for " << f.getName() << "\n";
-    //auto* DT = &getAnalysis<DominatorTreeWrapperPass>(f).getDomTree();
-    llvm::errs() << "\n Get AA Tree for " << f.getName() << "\n";
-    auto* AA = &getAnalysis<AAResultsWrapperPass>(f).getAAResults();
-    //llvm::errs() << "\n Get memSSA Tree for " << f.getName() << "\n";
-    //auto memSSA = std::make_unique<MemorySSA>(f, AA, DT);
+    llvm::errs() << "\n Get Dom Tree for " << f.getName() << "\n";
+    auto* DT = &getAnalysis<DominatorTreeWrapperPass>(f).getDomTree();
+    llvm::errs() << "\n Get AAResultsWrapper for " << f.getName() << "\n";
+    auto* AA = &getAnalysis<AAResultsWrapperPass>(f);
+    llvm::errs() << "\n Get memSSA for " << f.getName() << "\n";
+    auto memSSA = std::make_unique<MemorySSA>(f, &AA->getAAResults(), DT);
   
     fAAs.insert({&f, AA});
     //memSSA->print(llvm::outs());
@@ -92,9 +103,7 @@ FutureFunctionsPass::runOnModule(llvm::Module& m) {
   }
 
   for (auto& f : m) {
-    //if (f.getName() == "bar" || f.getName() == "crash") {
-    //  continue;
-    //}
+    llvm::outs() << "\n At function " << f.getName();
     for (auto& bb : f) {
       std::vector<llvm::LoadInst*> loadInsts;
       std::vector<llvm::StoreInst*> storeInsts;
@@ -114,15 +123,17 @@ FutureFunctionsPass::runOnModule(llvm::Module& m) {
         for (auto* storei : storeInsts) {
           llvm::outs() << "\n " << *loadi;
           llvm::outs() << "\n " << *storei;
-          auto* AA = fAAs[&f];
-          auto AAResult = AA->alias(loadi, loadi);
+          //auto* AA = &getAnalysis<AAResultsWrapperPass>(f).getAAResults();
+          auto& AA = fAAs[&f]->getAAResults();
+          auto storeMemLoc = llvm::MemoryLocation::get(storei);
+          auto  loadMemLoc =  llvm::MemoryLocation::get(loadi);
+          auto AAResult = AA.alias(storeMemLoc, loadMemLoc);
           if (AAResult == AliasResult::MustAlias) {
-            llvm::outs() << "\n Must Alias" ;
+            llvm::outs() << "\n Must Alias \n" ;
           }
         }
       }
     }
-
   }
 
 
@@ -146,14 +157,14 @@ instrumentFunctions(llvm::Module& m) {
   llvm::DebugFlag = true;
   legacy::PassManager pm;
   pm.add(createTypeBasedAAWrapperPass());
-//  pm.add(createGlobalsAAWrapperPass());
-//  pm.add(createSCEVAAWrapperPass());
-//  pm.add(createScopedNoAliasAAWrapperPass());
-//  pm.add(createCFLSteensAAWrapperPass());
-//  pm.add(new llvm::LoopInfoWrapperPass());
-//  pm.add(createPostDomTree());
-//  pm.add(new MemorySSAWrapperPass());
-//  pm.add(new DominatorTreeWrapperPass());
+  pm.add(createGlobalsAAWrapperPass());
+  pm.add(createSCEVAAWrapperPass());
+  pm.add(createScopedNoAliasAAWrapperPass());
+  pm.add(createCFLSteensAAWrapperPass());
+  pm.add(new llvm::LoopInfoWrapperPass());
+  //pm.add(createPostDomTree());
+  //pm.add(new MemorySSAWrapperPass());
+  pm.add(new DominatorTreeWrapperPass());
   //pm.add(createBasicAAWrapperPass());
   pm.add(new AAResultsWrapperPass());
   pm.add(new FutureFunctionsPass());

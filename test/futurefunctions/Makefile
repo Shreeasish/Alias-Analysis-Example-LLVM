@@ -25,7 +25,7 @@ llvmasm: $(ASM_FILES)
 analyze: ${TXT_FILES}
 
 ll/%.ll: c/%.c
-	$(CLANG) -g -emit-llvm -S -Xclang -disable-O0-optnone $< -o - | $(OPT) -mem2reg -S -o $@
+	$(CLANG) -g -emit-llvm -S -O3 $< -o - | $(OPT) -mem2reg -S -o $@
 
 txt/%.txt: ll/%.ll
 	$(CHECKER) $< | tee $@
