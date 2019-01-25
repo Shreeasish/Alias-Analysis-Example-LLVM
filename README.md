@@ -1,2 +1,4 @@
-Small example which shows the Alias Analysis results being invalidated resulting in an unknown memory read error.
+Small example to show how to use the LLVM Alias Analysis infrastructure on a module level pass.
+To be updated to include MemorySSA.
+
 Using https://github.com/nsumner/llvm-dataflow-analysis  as a template.
